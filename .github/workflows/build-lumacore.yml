@@ -1,0 +1,33 @@
+name: Build LumaCore
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-lumacore:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build LumaCore (Release + Debug)
+        shell: cmd
+        run: LumaCore\build.bat --no-pause
+
+      - name: Upload Release DLLs
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumacore-release
+          path: LumaCore\Releases\Release\
+          if-no-files-found: error
+
+      - name: Upload Debug DLLs
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumacore-debug
+          path: LumaCore\Releases\Debug\
+          if-no-files-found: error
