@@ -12,6 +12,7 @@
 #include <filesystem>
 #include <fstream>
 #include <atomic>
+#include <exception>
 #include <mutex>
 #include <regex>
 #include <string>
@@ -175,23 +176,29 @@ namespace ManifestBind {
         }
 
         std::thread([items = std::move(items)]() mutable {
-            for (const auto& it : items) {
-                std::string luaPath = LuaLoader::GetLuaFilePath(it.appId);
-                if (luaPath.empty()) continue;
-                if (RewriteLuaManifestGid(luaPath, it.depotId, it.newGid)) {
-                    LOG_MANIFESTCH_INFO("FlushPending: updated lua gid app={} depot={} gid={}",
-                                        it.appId, it.depotId, it.newGid);
-                    AppConfig::LoadJsonc(luaPath, it.appId, "");
-                    HookStatus::AppInfo app{};
-                    app.appId = it.appId;
-                    app.luaPath = luaPath;
-                    app.jsoncPath = AppConfig::JsoncPathFor(luaPath);
-                    app.allowUpdate = AppConfig::IsAllowUpdateEnabled(it.appId);
-                    app.onlinefix = AppConfig::IsOnlineFixEnabled(it.appId);
-                    app.manifestMode = app.allowUpdate ? "latest" : "pinned";
-                    app.manifestGid = it.newGid;
-                    HookStatus::PublishApp(app);
+            try {
+                for (const auto& it : items) {
+                    std::string luaPath = LuaLoader::GetLuaFilePath(it.appId);
+                    if (luaPath.empty()) continue;
+                    if (RewriteLuaManifestGid(luaPath, it.depotId, it.newGid)) {
+                        LOG_MANIFESTCH_INFO("FlushPending: updated lua gid app={} depot={} gid={}",
+                                            it.appId, it.depotId, it.newGid);
+                        AppConfig::LoadJsonc(luaPath, it.appId, "");
+                        HookStatus::AppInfo app{};
+                        app.appId = it.appId;
+                        app.luaPath = luaPath;
+                        app.jsoncPath = AppConfig::JsoncPathFor(luaPath);
+                        app.allowUpdate = AppConfig::IsAllowUpdateEnabled(it.appId);
+                        app.onlinefix = AppConfig::IsOnlineFixEnabled(it.appId);
+                        app.manifestMode = app.allowUpdate ? "latest" : "pinned";
+                        app.manifestGid = it.newGid;
+                        HookStatus::PublishApp(app);
+                    }
                 }
+            } catch (const std::exception& e) {
+                LOG_MANIFESTCH_WARN("FlushPending worker exception: {}", e.what());
+            } catch (...) {
+                LOG_MANIFESTCH_WARN("FlushPending worker exception: unknown");
             }
             g_flushRunning.store(false, std::memory_order_release);
         }).detach();

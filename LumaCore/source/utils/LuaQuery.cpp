@@ -19,6 +19,7 @@
 
 #include <lua.hpp>
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <future>
@@ -31,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -326,27 +328,35 @@ namespace LuaLoader {
         const auto t0 = std::chrono::steady_clock::now();
 
         // Phase 1: parallel file read + mtime stat
-        std::vector<std::future<FileSnapshot>> jobs;
-        jobs.reserve(luaFiles.size());
-        for (const auto& filePath : luaFiles) {
-            jobs.push_back(std::async(std::launch::async, [filePath]() -> FileSnapshot {
-                FileSnapshot snap{};
-                snap.path = filePath;
-                snap.mtime = ReadMtimeSeconds(filePath);
-                std::ifstream f(filePath, std::ios::binary);
-                if (f) {
-                    snap.body.assign((std::istreambuf_iterator<char>(f)),
-                                     std::istreambuf_iterator<char>());
-                } else {
-                    LOG_WARN("ParseDirectory phase1: failed to read {}", filePath);
+        std::vector<FileSnapshot> snapshots(luaFiles.size());
+        const size_t workerCount =
+            std::max<size_t>(1, std::min(luaFiles.size(),
+                                         static_cast<size_t>(std::max(1u, std::thread::hardware_concurrency()))));
+        std::atomic<size_t> nextIx{0};
+        std::vector<std::future<void>> jobs;
+        jobs.reserve(workerCount);
+        for (size_t w = 0; w < workerCount; ++w) {
+            jobs.push_back(std::async(std::launch::async, [&]() {
+                for (;;) {
+                    size_t i = nextIx.fetch_add(1, std::memory_order_relaxed);
+                    if (i >= luaFiles.size()) break;
+                    const auto& filePath = luaFiles[i];
+                    FileSnapshot snap{};
+                    snap.path = filePath;
+                    snap.mtime = ReadMtimeSeconds(filePath);
+                    std::ifstream f(filePath, std::ios::binary);
+                    if (f) {
+                        snap.body.assign((std::istreambuf_iterator<char>(f)),
+                                         std::istreambuf_iterator<char>());
+                    } else {
+                        LOG_WARN("ParseDirectory phase1: failed to read {}", filePath);
+                    }
+                    snap.appId = ParseAppIdFromLuaPath(std::filesystem::path(filePath));
+                    snapshots[i] = std::move(snap);
                 }
-                snap.appId = ParseAppIdFromLuaPath(std::filesystem::path(filePath));
-                return snap;
             }));
         }
-        std::vector<FileSnapshot> snapshots;
-        snapshots.reserve(jobs.size());
-        for (auto& j : jobs) snapshots.push_back(j.get());
+        for (auto& j : jobs) j.get();
         // Keep deterministic ordering across runs after parallel phase-1 reads.
         std::sort(snapshots.begin(), snapshots.end(),
                   [](const FileSnapshot& a, const FileSnapshot& b) { return a.path < b.path; });
@@ -395,16 +405,30 @@ namespace LuaLoader {
         const auto t2 = std::chrono::steady_clock::now();
 
         // Phase 3: parallel AppConfig ensure/load + status publish
-        std::vector<std::future<void>> cfgJobs;
-        cfgJobs.reserve(snapshots.size());
-        for (const auto& snap : snapshots) {
-            if (!snap.appId) continue;
-            cfgJobs.push_back(std::async(std::launch::async, [snap]() {
-                AppConfig::EnsureJsonc(snap.path, *snap.appId, "");
-                AppConfig::LoadJsonc(snap.path, *snap.appId, "");
-            }));
+        std::vector<size_t> cfgIdx;
+        cfgIdx.reserve(snapshots.size());
+        for (size_t i = 0; i < snapshots.size(); ++i) {
+            if (snapshots[i].appId) cfgIdx.push_back(i);
         }
-        for (auto& j : cfgJobs) j.get();
+        if (!cfgIdx.empty()) {
+            const size_t cfgWorkers =
+                std::max<size_t>(1, std::min(cfgIdx.size(), workerCount));
+            std::atomic<size_t> cfgNext{0};
+            std::vector<std::future<void>> cfgJobs;
+            cfgJobs.reserve(cfgWorkers);
+            for (size_t w = 0; w < cfgWorkers; ++w) {
+                cfgJobs.push_back(std::async(std::launch::async, [&]() {
+                    for (;;) {
+                        size_t j = cfgNext.fetch_add(1, std::memory_order_relaxed);
+                        if (j >= cfgIdx.size()) break;
+                        const auto& snap = snapshots[cfgIdx[j]];
+                        AppConfig::EnsureJsonc(snap.path, *snap.appId, "");
+                        AppConfig::LoadJsonc(snap.path, *snap.appId, "");
+                    }
+                }));
+            }
+            for (auto& j : cfgJobs) j.get();
+        }
         const auto t3 = std::chrono::steady_clock::now();
 
         LOG_PACKAGE_DEBUG("ParseDirectory phases: p1={}ms p2={}ms p3={}ms files={}",

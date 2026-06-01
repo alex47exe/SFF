@@ -46,13 +46,24 @@ namespace AppConfig {
         }
 
         bool ReadBoolKey(const std::string& json, const char* key, bool fallback) {
-            std::regex re(std::string("\"") + key + R"("\s*:\s*(true|false))",
-                          std::regex::icase);
-            std::smatch m;
-            if (!std::regex_search(json, m, re) || m.size() < 2) return fallback;
-            std::string v = m[1].str();
-            for (char& c : v) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
-            return v == "true";
+            const std::string needle = std::string("\"") + key + "\"";
+            size_t pos = json.find(needle);
+            if (pos == std::string::npos) return fallback;
+            pos = json.find(':', pos + needle.size());
+            if (pos == std::string::npos) return fallback;
+            ++pos;
+            while (pos < json.size()
+                   && (json[pos] == ' ' || json[pos] == '\t'
+                       || json[pos] == '\r' || json[pos] == '\n')) {
+                ++pos;
+            }
+            if (pos + 4 <= json.size()) {
+                std::string token = json.substr(pos, 5);
+                for (char& c : token) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
+                if (token.rfind("true", 0) == 0) return true;
+                if (token.rfind("false", 0) == 0) return false;
+            }
+            return fallback;
         }
 
         std::string JsonEscape(const std::string& s) {
