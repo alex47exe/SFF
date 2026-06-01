@@ -6,6 +6,7 @@
 #include "StringFind.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
