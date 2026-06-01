@@ -57,6 +57,11 @@ fallback_db = os.path.join(spec_root, 'sff', 'fallback_depotkeys.json')
 if os.path.exists(fallback_db):
     datas.append((fallback_db, 'sff'))
 
+# Include pre-built LumaCore DLLs if present (populated by CI from build-lumacore job)
+lumacore_dir = os.path.join(spec_root, 'sff', 'lumacore')
+if os.path.exists(lumacore_dir):
+    datas.append((lumacore_dir, 'sff/lumacore'))
+
 # Include all_games.txt for offline game name resolution in Cloud Saves
 all_games_txt = os.path.join(spec_root, 'all_games.txt')
 if os.path.exists(all_games_txt):
