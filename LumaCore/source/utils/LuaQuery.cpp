@@ -201,8 +201,8 @@ namespace LuaLoader {
         UnloadFile_nolock(filePath);
         LOG_PACKAGE_INFO("UnloadFile: removed {} depots from {}", depots.size(), filePath);
 
-        for (AppId_t id : depots) {
-            AppConfig::Unload(id);
+        if (auto appId = ParseAppIdFromLuaPath(std::filesystem::path(filePath))) {
+            AppConfig::Unload(*appId);
         }
 
         if (Settings::cleanupOrphanJsonc) {
