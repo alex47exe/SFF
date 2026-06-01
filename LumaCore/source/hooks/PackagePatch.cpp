@@ -120,17 +120,25 @@ namespace {
     LC_HOOK_DEF(CheckAppOwnership, bool, void* pObj, AppId_t appId, AppOwnership* pOwn) {
         bool result = oCheckAppOwnership(pObj, appId, pOwn);
         if (pOwn && LuaLoader::HasDepot(appId)) {
-            if (result && pOwn->ExistInPackageNums > 1
+            if (result && pOwn->ExistInPackageNums > 2
+                && pOwn->PackageId != 0
                 && pOwn->ReleaseState == EAppReleaseState::Released) {
-                // Actually owned — record so HasDepot excludes it going forward
+                // Actually owned — record so HasDepot excludes it going forward.
+                // Guard: ExistInPackageNums > 2 and PackageId != 0 so that a single
+                // injection into package 0 (which gives ExistInPkg == 1 or 2 due to
+                // Steam's own free-license package) never trips this path. Only a real
+                // license appearing in 3+ packages with a non-zero PackageId is
+                // treated as genuine ownership.
                 LuaLoader::MarkOwned(appId);
-                LOG_PACKAGE_DEBUG("CheckAppOwnership: appId={} actually owned, marking", appId);
+                LOG_PACKAGE_DEBUG("CheckAppOwnership: appId={} actually owned (ExistInPkg={} PackageId={}), marking",
+                                  appId, pOwn->ExistInPackageNums, pOwn->PackageId);
             } else {
+                uint32_t origPackageId = pOwn->PackageId;
                 pOwn->PackageId    = 0;
                 pOwn->ReleaseState = EAppReleaseState::Released;
                 pOwn->bFreeLicense = false;
-                LOG_PACKAGE_INFO("CheckAppOwnership: appId={} patched -> owned (was result={} ExistInPkg={})",
-                                  appId, result, pOwn->ExistInPackageNums);
+                LOG_PACKAGE_INFO("CheckAppOwnership: appId={} patched -> owned (was result={} ExistInPkg={} PackageId={})",
+                                  appId, result, pOwn->ExistInPackageNums, origPackageId);
                 // Diagnostic only: titles known to use Steam DRM (Steam Stub)
                 // can still fail at launch with error 54 even after we patch
                 // ownership, because the wrapper does its own registry-based
