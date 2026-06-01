@@ -22,37 +22,44 @@ namespace RichPresence {
         }
 
         AppId_t realAppId = SteamCapture::ResolveAppId();
-        if (!realAppId) {
-            LOG_MISCCH_TRACE("RichPresence: no realAppId (no -onlinefix active), skip");
-            return false;
-        }
-        if (!LuaLoader::HasDepot(realAppId)) {
-            LOG_MISCCH_TRACE("RichPresence: realAppId={} not in depot list, skip", realAppId);
-            return false;
-        }
+        const bool hasOnlineFixPath = realAppId && LuaLoader::HasDepot(realAppId);
 
         bool patched = false;
         int seen480 = 0;
         for (int i = 0; i < msg.friends_size(); ++i) {
             auto* f = msg.mutable_friends(i);
-            if (static_cast<AppId_t>(f->game_played_app_id()) != kOnlineFixAppId)
+            const AppId_t friendAppId = static_cast<AppId_t>(f->game_played_app_id());
+
+            // Path A: active OnlineFix session (480 -> real appid rewrite).
+            if (hasOnlineFixPath && friendAppId == kOnlineFixAppId) {
+                ++seen480;
+                std::string name = SteamCapture::GetGameNameByAppID(realAppId);
+                f->set_game_played_app_id(realAppId);
+                f->set_gameid(static_cast<uint64>(realAppId));
+                if (!name.empty())
+                    f->set_game_name(name);
+                LOG_MISCCH_INFO("RichPresence: patched friendid={} 480 -> {} ({})",
+                              f->friendid(), realAppId, name);
+                patched = true;
                 continue;
-            ++seen480;
+            }
 
-            std::string name = SteamCapture::GetGameNameByAppID(realAppId);
-            f->set_game_played_app_id(realAppId);
-            f->set_gameid(static_cast<uint64>(realAppId));
-            if (!name.empty())
-                f->set_game_name(name);
-
-            LOG_MISCCH_INFO("RichPresence: patched friendid={} 480 -> {} ({})",
-                          f->friendid(), realAppId, name);
-            patched = true;
+            // Path B: tracked game with missing game_name; fill by appid lookup.
+            if (friendAppId != 0 && LuaLoader::HasDepot(friendAppId)
+                && f->game_name().empty()) {
+                std::string name = SteamCapture::GetGameNameByAppID(friendAppId);
+                if (!name.empty()) {
+                    f->set_game_name(name);
+                    LOG_MISCCH_TRACE("RichPresence: filled game_name for appid={} friendid={}",
+                                     friendAppId, f->friendid());
+                    patched = true;
+                }
+            }
         }
 
         if (!patched) {
-            LOG_MISCCH_TRACE("RichPresence: realAppId={} active, friends={} seen480={} (nothing to patch)",
-                           realAppId, msg.friends_size(), seen480);
+            LOG_MISCCH_TRACE("RichPresence: realAppId={} active={} friends={} seen480={} (nothing to patch)",
+                           realAppId, hasOnlineFixPath, msg.friends_size(), seen480);
             return false;
         }
 

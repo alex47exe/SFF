@@ -36,6 +36,7 @@ namespace LuaLoader::Internal {
     std::unordered_map<AppId_t, uint64_t>    StatSteamIdSet{};
     std::unordered_set<AppId_t>              OwnedAppIdSet{};
     std::unordered_map<AppId_t, int64_t>     LuaMtimeMap{};
+    std::unordered_map<AppId_t, std::string> LuaFilePathMap{};
 
     std::unordered_map<std::string, std::unordered_set<AppId_t>> g_fileDepots;
     std::unordered_map<AppId_t, uint32_t> g_depotRefCount;
@@ -72,6 +73,26 @@ namespace LuaLoader::Internal {
         if (++g_depotRefCount[id] == 1) {
             g_pendingAdditions.push_back(id);
         }
+    }
+
+    void UnloadFile_nolock(const std::string& filePath) {
+        auto it = g_fileDepots.find(filePath);
+        if (it == g_fileDepots.end()) return;
+
+        for (AppId_t id : it->second) {
+            auto refIt = g_depotRefCount.find(id);
+            if (refIt != g_depotRefCount.end() && --refIt->second == 0) {
+                g_depotRefCount.erase(refIt);
+                DepotKeySet.erase(id);
+                g_pendingRemovals.push_back(id);
+            }
+            auto pathIt = LuaFilePathMap.find(id);
+            if (pathIt != LuaFilePathMap.end() && pathIt->second == filePath) {
+                LuaFilePathMap.erase(pathIt);
+            }
+        }
+
+        g_fileDepots.erase(it);
     }
 
     namespace {

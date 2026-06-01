@@ -31,6 +31,7 @@ namespace LuaLoader {
     // when the appid wasn't registered through ParseFile (legacy entries
     // captured by addappid in the same process before ParseFile ran).
     int64_t GetLuaMtime(AppId_t appId);
+    std::string GetLuaFilePath(AppId_t appId);
 
     struct ManifestOverride {
           uint64_t gid;

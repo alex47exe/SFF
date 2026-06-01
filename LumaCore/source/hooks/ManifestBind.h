@@ -9,4 +9,5 @@
 namespace ManifestBind {
     void Install();
     void Uninstall();
+    void FlushPending();
 }

@@ -13,20 +13,26 @@
 // available through luaL_loadbuffer's chunk name.
 
 #include "LuaLoaderInternal.h"
+#include "AppConfig.h"
+#include "HookStatus.h"
 #include "Logger.h"
 
 #include <lua.hpp>
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
+#include <future>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #define WIN32_LEAN_AND_MEAN
@@ -56,6 +62,42 @@ namespace {
             return false;
         }
     }
+        int64_t ReadMtimeSeconds(const std::string& filePath) {
+            int64_t lua_mtime_secs = 0;
+            WIN32_FILE_ATTRIBUTE_DATA attr{};
+            if (GetFileAttributesExA(filePath.c_str(), GetFileExInfoStandard, &attr)) {
+                ULARGE_INTEGER ull{};
+                ull.LowPart  = attr.ftLastWriteTime.dwLowDateTime;
+                ull.HighPart = attr.ftLastWriteTime.dwHighDateTime;
+                constexpr uint64_t kEpochOffset = 116444736000000000ull;
+                if (ull.QuadPart >= kEpochOffset) {
+                    lua_mtime_secs = static_cast<int64_t>((ull.QuadPart - kEpochOffset) / 10000000ull);
+                }
+            }
+            return lua_mtime_secs;
+        }
+
+        std::optional<AppId_t> ParseAppIdFromLuaPath(const std::filesystem::path& path) {
+            const std::string stem = path.stem().string();
+            if (stem.empty()
+                || !std::all_of(stem.begin(), stem.end(),
+                                [](unsigned char c){ return std::isdigit(c); })) {
+                return std::nullopt;
+            }
+            uint64_t val = 0;
+            if (!TryParseUInt64Decimal(stem, val) || val == 0 || val > UINT32_MAX) {
+                return std::nullopt;
+            }
+            return static_cast<AppId_t>(val);
+        }
+
+        struct FileSnapshot {
+            std::string path;
+            std::string body;
+            int64_t mtime = 0;
+            std::optional<AppId_t> appId;
+        };
+    }
 }
 
 namespace LuaLoader {
@@ -75,6 +117,12 @@ namespace LuaLoader {
         using namespace Internal;
         auto it = LuaMtimeMap.find(appId);
         return it == LuaMtimeMap.end() ? 0 : it->second;
+    }
+
+    std::string GetLuaFilePath(AppId_t appId) {
+        using namespace Internal;
+        auto it = LuaFilePathMap.find(appId);
+        return it == LuaFilePathMap.end() ? std::string() : it->second;
     }
 
     void MarkOwned(AppId_t appId) {
@@ -149,19 +197,22 @@ namespace LuaLoader {
         using namespace Internal;
         auto it = g_fileDepots.find(filePath);
         if (it == g_fileDepots.end()) return;
+        std::vector<AppId_t> depots(it->second.begin(), it->second.end());
+        UnloadFile_nolock(filePath);
+        LOG_PACKAGE_INFO("UnloadFile: removed {} depots from {}", depots.size(), filePath);
 
-        for (AppId_t id : it->second) {
-            LOG_PACKAGE_DEBUG("UnloadFile:Ref count for AppId {} is {}", id, g_depotRefCount[id]);
-            auto refIt = g_depotRefCount.find(id);
-            if (refIt != g_depotRefCount.end() && --refIt->second == 0) {
-                g_depotRefCount.erase(refIt);
-                DepotKeySet.erase(id);
-                g_pendingRemovals.push_back(id);
-            }
+        if (auto appId = ParseAppIdFromLuaPath(std::filesystem::path(filePath))) {
+            AppConfig::Unload(*appId);
         }
 
-        LOG_PACKAGE_INFO("UnloadFile: removed {} depots from {}", it->second.size(), filePath);
-        g_fileDepots.erase(it);
+        if (Settings::cleanupOrphanJsonc) {
+            std::error_code ec;
+            std::filesystem::remove(AppConfig::JsoncPathFor(filePath), ec);
+            if (ec) {
+                LOG_PACKAGE_DEBUG("UnloadFile: jsonc cleanup failed for {} ({})",
+                                  filePath, ec.message());
+            }
+        }
     }
 
     std::vector<AppId_t> TakePendingRemovals() {
@@ -181,7 +232,7 @@ namespace LuaLoader {
         using namespace Internal;
         if (!Initialize()) return;
 
-        UnloadFile(filePath);
+        UnloadFile_nolock(filePath);
 
         ParseSession session;
         session.currentFile = filePath;
@@ -192,25 +243,8 @@ namespace LuaLoader {
 
         std::filesystem::path path(filePath);
 
-        // Stamp the .lua's last-write time so the host can tell Steam's
-        // appinfo "added" timestamp where the user dropped the file. Library
-        // sort by Date Added relies on that field; without it Steam picks
-        // the install/launch order which is wrong for fake-owned games.
-        int64_t lua_mtime_secs = 0;
-        {
-            WIN32_FILE_ATTRIBUTE_DATA attr{};
-            if (GetFileAttributesExA(filePath.c_str(), GetFileExInfoStandard, &attr)) {
-                ULARGE_INTEGER ull{};
-                ull.LowPart  = attr.ftLastWriteTime.dwLowDateTime;
-                ull.HighPart = attr.ftLastWriteTime.dwHighDateTime;
-                // FILETIME is 100ns ticks since 1601-01-01. Shift to unix
-                // epoch and convert to seconds.
-                constexpr uint64_t kEpochOffset = 116444736000000000ull;
-                if (ull.QuadPart >= kEpochOffset) {
-                    lua_mtime_secs = static_cast<int64_t>((ull.QuadPart - kEpochOffset) / 10000000ull);
-                }
-            }
-        }
+        int64_t lua_mtime_secs = ReadMtimeSeconds(filePath);
+        std::optional<AppId_t> fileAppId = ParseAppIdFromLuaPath(path);
 
         // Auto-register the appid that the filename stem encodes (e.g. a
         // file named "3764200.lua" registers depot 3764200 even if the
@@ -218,26 +252,19 @@ namespace LuaLoader {
         // re-clears OwnedAppIdSet for that appid so multi-account swaps
         // don't keep showing "Purchase".
         {
-            const std::string stem = path.stem().string();
-            if (!stem.empty()
-                && std::all_of(stem.begin(), stem.end(),
-                                [](unsigned char c){ return std::isdigit(c); })) {
-                uint64_t val = 0;
-                if (TryParseUInt64Decimal(stem, val) && val > 0 && val <= UINT32_MAX) {
-                    AppId_t fileAppId = static_cast<AppId_t>(val);
-
-                    if (OwnedAppIdSet.erase(fileAppId)) {
-                        LOG_PACKAGE_INFO("ParseFile: clearing owned status for appid={} (Lua re-added)", fileAppId);
-                    }
-                    if (!DepotKeySet.count(fileAppId)) {
-                        DepotKeySet[fileAppId] = "";
-                        session.recordDepot(fileAppId);
-                        LOG_DEBUG("ParseFile: auto-registered appid={} from filename {}", fileAppId, stem);
-                    }
-                    if (lua_mtime_secs > 0) {
-                        LuaMtimeMap[fileAppId] = lua_mtime_secs;
-                    }
+            if (fileAppId) {
+                if (OwnedAppIdSet.erase(*fileAppId)) {
+                    LOG_PACKAGE_INFO("ParseFile: clearing owned status for appid={} (Lua re-added)", *fileAppId);
                 }
+                if (!DepotKeySet.count(*fileAppId)) {
+                    DepotKeySet[*fileAppId] = "";
+                    session.recordDepot(*fileAppId);
+                    LOG_DEBUG("ParseFile: auto-registered appid={} from filename {}", *fileAppId, path.stem().string());
+                }
+                if (lua_mtime_secs > 0) {
+                    LuaMtimeMap[*fileAppId] = lua_mtime_secs;
+                }
+                LuaFilePathMap[*fileAppId] = path.lexically_normal().make_preferred().string();
             }
         }
 
@@ -267,6 +294,12 @@ namespace LuaLoader {
             LOG_WARN("{}: {}", chunkName, err ? err : "unknown");
             lua_pop(g_lua_state, 1);
         }
+
+        if (fileAppId) {
+            const std::string normPath = path.lexically_normal().make_preferred().string();
+            AppConfig::EnsureJsonc(normPath, *fileAppId, "");
+            AppConfig::LoadJsonc(normPath, *fileAppId, "");
+        }
     }
 
     // ── directory scanner ────────────────────────────────────────────────
@@ -283,20 +316,127 @@ namespace LuaLoader {
             return;
         }
 
+        std::vector<std::string> luaFiles;
         for (const auto& entry : std::filesystem::directory_iterator(directory, ec)) {
             if (ec) break;
             if (!entry.is_regular_file()) continue;
             if (entry.path().extension() != ".lua") continue;
-            // Canonicalize to the same shape DirWatch's Harvest produces so
-            // a later UnloadFile lookup hits the same g_fileDepots key.
-            // Without this a slash flip between boot and runtime makes
-            // the unload silently no-op.
-            ParseFile(entry.path().lexically_normal().make_preferred().string());
+            luaFiles.push_back(entry.path().lexically_normal().make_preferred().string());
         }
+        if (luaFiles.empty()) return;
 
-        // The first directory pass populates DepotKeySet but we don't want
-        // those entries to count as "post-startup additions" — they were
-        // present at boot. Discard the queue.
+        const auto t0 = std::chrono::steady_clock::now();
+
+        // Phase 1: parallel file read + mtime stat
+        std::vector<FileSnapshot> snapshots(luaFiles.size());
+        const size_t workerCount =
+            std::max<size_t>(1, std::min(luaFiles.size(),
+                                         static_cast<size_t>(std::max(1u, std::thread::hardware_concurrency()))));
+        std::atomic<size_t> nextIx{0};
+        std::vector<std::future<void>> jobs;
+        jobs.reserve(workerCount);
+        for (size_t w = 0; w < workerCount; ++w) {
+            jobs.push_back(std::async(std::launch::async, [&]() {
+                for (;;) {
+                    size_t i = nextIx.fetch_add(1, std::memory_order_relaxed);
+                    if (i >= luaFiles.size()) break;
+                    const auto& filePath = luaFiles[i];
+                    FileSnapshot snap{};
+                    snap.path = filePath;
+                    snap.mtime = ReadMtimeSeconds(filePath);
+                    std::ifstream f(filePath, std::ios::binary);
+                    if (f) {
+                        snap.body.assign((std::istreambuf_iterator<char>(f)),
+                                         std::istreambuf_iterator<char>());
+                    } else {
+                        LOG_WARN("ParseDirectory phase1: failed to read {}", filePath);
+                    }
+                    snap.appId = ParseAppIdFromLuaPath(std::filesystem::path(filePath));
+                    snapshots[i] = std::move(snap);
+                }
+            }));
+        }
+        for (auto& j : jobs) j.get();
+        // Keep deterministic ordering across runs after parallel phase-1 reads.
+        std::sort(snapshots.begin(), snapshots.end(),
+                  [](const FileSnapshot& a, const FileSnapshot& b) { return a.path < b.path; });
+        const auto t1 = std::chrono::steady_clock::now();
+
+        // Phase 2: serial luaL_loadbuffer + lua_pcall
+        for (const auto& snap : snapshots) {
+            UnloadFile_nolock(snap.path);
+
+            ParseSession session;
+            session.currentFile = snap.path;
+            g_activeSession = &session;
+            struct SessionGuard {
+                ~SessionGuard() { g_activeSession = nullptr; }
+            } guard;
+
+            const std::filesystem::path path(snap.path);
+            if (snap.appId) {
+                if (OwnedAppIdSet.erase(*snap.appId)) {
+                    LOG_PACKAGE_INFO("ParseDirectory: clearing owned status for appid={} (Lua re-added)",
+                                     *snap.appId);
+                }
+                if (!DepotKeySet.count(*snap.appId)) {
+                    DepotKeySet[*snap.appId] = "";
+                    session.recordDepot(*snap.appId);
+                }
+                if (snap.mtime > 0) LuaMtimeMap[*snap.appId] = snap.mtime;
+                LuaFilePathMap[*snap.appId] = snap.path;
+            }
+
+            const std::string chunkName = path.filename().string();
+            lua_settop(g_lua_state, 0);
+            int rc = luaL_loadbuffer(g_lua_state, snap.body.data(), snap.body.size(), chunkName.c_str());
+            if (rc == LUA_OK) {
+                if (lua_pcall(g_lua_state, 0, 0, 0) != LUA_OK) {
+                    const char* err = lua_tostring(g_lua_state, -1);
+                    LOG_WARN("{}: {}", chunkName, err ? err : "unknown");
+                    lua_pop(g_lua_state, 1);
+                }
+            } else {
+                const char* err = lua_tostring(g_lua_state, -1);
+                LOG_WARN("{}: {}", chunkName, err ? err : "unknown");
+                lua_pop(g_lua_state, 1);
+            }
+        }
+        const auto t2 = std::chrono::steady_clock::now();
+
+        // Phase 3: parallel AppConfig ensure/load + status publish
+        std::vector<size_t> cfgIdx;
+        cfgIdx.reserve(snapshots.size());
+        for (size_t i = 0; i < snapshots.size(); ++i) {
+            if (snapshots[i].appId) cfgIdx.push_back(i);
+        }
+        if (!cfgIdx.empty()) {
+            const size_t cfgWorkers =
+                std::max<size_t>(1, std::min(cfgIdx.size(), workerCount));
+            std::atomic<size_t> cfgNext{0};
+            std::vector<std::future<void>> cfgJobs;
+            cfgJobs.reserve(cfgWorkers);
+            for (size_t w = 0; w < cfgWorkers; ++w) {
+                cfgJobs.push_back(std::async(std::launch::async, [&]() {
+                    for (;;) {
+                        size_t j = cfgNext.fetch_add(1, std::memory_order_relaxed);
+                        if (j >= cfgIdx.size()) break;
+                        const auto& snap = snapshots[cfgIdx[j]];
+                        AppConfig::EnsureJsonc(snap.path, *snap.appId, "");
+                        AppConfig::LoadJsonc(snap.path, *snap.appId, "");
+                    }
+                }));
+            }
+            for (auto& j : cfgJobs) j.get();
+        }
+        const auto t3 = std::chrono::steady_clock::now();
+
+        LOG_PACKAGE_DEBUG("ParseDirectory phases: p1={}ms p2={}ms p3={}ms files={}",
+                          std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count(),
+                          std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count(),
+                          std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count(),
+                          snapshots.size());
+
         g_pendingAdditions.clear();
     }
 

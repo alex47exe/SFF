@@ -79,6 +79,7 @@ add_library(LumaCore SHARED
     utils/ByteScan.cpp
     utils/Logger.cpp
     utils/Settings.cpp
+    utils/AppConfig.cpp
     utils/LuaState.cpp
     utils/LuaBindings.cpp
     utils/LuaQuery.cpp
