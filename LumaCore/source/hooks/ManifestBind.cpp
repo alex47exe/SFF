@@ -42,7 +42,10 @@ namespace {
 
     static bool RewriteLuaManifestGid(const std::string& luaPath, uint64_t depotId, uint64_t gid) {
         std::ifstream in(luaPath, std::ios::binary);
-        if (!in) return false;
+        if (!in) {
+            LOG_MANIFESTCH_WARN("RewriteLuaManifestGid: failed to open {}", luaPath);
+            return false;
+        }
         std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
         in.close();
         if (body.empty()) return false;
@@ -57,9 +60,16 @@ namespace {
         if (updated == body) return false;
 
         std::ofstream out(luaPath, std::ios::binary | std::ios::trunc);
-        if (!out) return false;
+        if (!out) {
+            LOG_MANIFESTCH_WARN("RewriteLuaManifestGid: failed to open for write {}", luaPath);
+            return false;
+        }
         out.write(updated.data(), static_cast<std::streamsize>(updated.size()));
-        return static_cast<bool>(out);
+        if (!out) {
+            LOG_MANIFESTCH_WARN("RewriteLuaManifestGid: write failed {}", luaPath);
+            return false;
+        }
+        return true;
     }
 
     // ▌ MANIFEST ▌ helper

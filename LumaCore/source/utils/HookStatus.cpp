@@ -75,6 +75,7 @@ namespace HookStatus {
             }
             if (hits.empty()) return {false, ""};
             std::sort(hits.begin(), hits.end());
+            // unique() dedup relies on the sorted order above.
             hits.erase(std::unique(hits.begin(), hits.end()), hits.end());
 
             std::string reason = "critical hooks missed: ";

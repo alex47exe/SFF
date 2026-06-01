@@ -38,8 +38,10 @@ namespace AppConfig {
         }
 
         std::string StripJsoncComments(std::string in) {
-            in = std::regex_replace(in, std::regex(R"(//[^\r\n]*)"), "");
-            in = std::regex_replace(in, std::regex(R"(/\*[\s\S]*?\*/)"), "");
+            static const std::regex kLineComment(R"(//[^\r\n]*)");
+            static const std::regex kBlockComment(R"(/\*[\s\S]*?\*/)");
+            in = std::regex_replace(in, kLineComment, "");
+            in = std::regex_replace(in, kBlockComment, "");
             return in;
         }
 

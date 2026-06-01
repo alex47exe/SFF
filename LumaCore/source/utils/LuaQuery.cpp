@@ -337,6 +337,8 @@ namespace LuaLoader {
                 if (f) {
                     snap.body.assign((std::istreambuf_iterator<char>(f)),
                                      std::istreambuf_iterator<char>());
+                } else {
+                    LOG_WARN("ParseDirectory phase1: failed to read {}", filePath);
                 }
                 snap.appId = ParseAppIdFromLuaPath(std::filesystem::path(filePath));
                 return snap;
@@ -345,6 +347,7 @@ namespace LuaLoader {
         std::vector<FileSnapshot> snapshots;
         snapshots.reserve(jobs.size());
         for (auto& j : jobs) snapshots.push_back(j.get());
+        // Keep deterministic ordering across runs after parallel phase-1 reads.
         std::sort(snapshots.begin(), snapshots.end(),
                   [](const FileSnapshot& a, const FileSnapshot& b) { return a.path < b.path; });
         const auto t1 = std::chrono::steady_clock::now();
