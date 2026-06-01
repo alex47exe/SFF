@@ -39,6 +39,22 @@ static_assert(sizeof(AppLicensesChanged_t) == 0x118,
               "AppLicensesChanged_t must be 0x118 bytes");
 
 //-----------------------------------------------------------------------------
+// Purpose: Fired by Steam (ISteamApps) when an app finishes installing.
+//          PackagePatch::hkSendCallbackToPipe listens for this to flush
+//          pending ManifestBind registrations that were deferred until the
+//          install depot is ready.
+//
+//          k_iCallback = 3503  (k_iSteamAppsCallbacks + 5)
+//-----------------------------------------------------------------------------
+struct AppInstalled_t
+{
+	enum { k_iCallback = 3503 };
+
+	AppId_t m_nAppID;   // AppId of the app that finished installing
+	int32   m_iInstallFolderIndex; // install folder index
+};
+
+//-----------------------------------------------------------------------------
 // Purpose: Fires when an achievement is committed to Steam's servers.
 //          Steam re-emits this for cached unlocks at login, which is how
 //          stale unlocks from a prior account/install bleed back into the
