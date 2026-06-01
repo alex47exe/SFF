@@ -32,8 +32,6 @@ echo ============================================================
 echo.
 
 :: --- ALWAYS delete build directory to prevent stale cache issues ---
-:: This guarantees that source edits ALWAYS produce updated DLLs — no stale
-:: incremental link, no cached object files. Slower but always correct.
 if exist "%BUILD_DIR%" (
     echo [STEP] Deleting old build directory...
     rmdir /S /Q "%BUILD_DIR%"
@@ -44,7 +42,7 @@ if exist "%BUILD_DIR%" (
     )
 )
 
-:: --- Locate cmake: try PATH first, then the VS Build Tools default install ---
+:: --- Locate cmake: try PATH first, then the VS 2022 default install ---
 set "CMAKE_EXE=cmake"
 where cmake >nul 2>&1
 if !errorlevel! neq 0 (
@@ -53,25 +51,23 @@ if !errorlevel! neq 0 (
         set "CMAKE_EXE=%ProgramFiles%\Microsoft Visual Studio\2022\BuildTools\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
     )
     if not exist "!CMAKE_EXE!" (
-        echo [ERROR] cmake not found. Add cmake to PATH or install VS Build Tools 2022.
+        set "CMAKE_EXE=%ProgramFiles%\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+    )
+    if not exist "!CMAKE_EXE!" (
+        echo [ERROR] cmake not found. Add cmake to PATH or install VS 2022.
         if "%NO_PAUSE%"=="0" pause
         exit /b 1
     )
-    echo [INFO] Using cmake from VS Build Tools: !CMAKE_EXE!
+    echo [INFO] Using cmake from VS install: !CMAKE_EXE!
 )
 
-:: --- Pick generator: prefer Ninja Multi-Config (fast, parallel, multi-config),
-::     fall back to Visual Studio 17 2022.
+:: --- Always use Visual Studio 17 2022 with MSBuild (x64) ---
+:: Ninja requires a pre-configured MSVC environment (vcvars) which is not
+:: guaranteed in all build environments. The VS generator handles MSVC
+:: discovery automatically and is more robust for CI and local builds.
 set "GENERATOR=Visual Studio 17 2022"
 set "GEN_ARGS=-A x64"
-where ninja >nul 2>&1
-if !errorlevel! == 0 (
-    set "GENERATOR=Ninja Multi-Config"
-    set "GEN_ARGS="
-    echo [INFO] Using Ninja Multi-Config generator
-) else (
-    echo [INFO] Using Visual Studio 17 2022 generator
-)
+echo [INFO] Using Visual Studio 17 2022 generator (MSBuild/MSVC x64)
 
 :: --- Configure ---
 echo [STEP] Configuring...
@@ -84,9 +80,6 @@ if !errorlevel! neq 0 (
 )
 
 :: --- Build Release and Debug ---
-:: Build Release first so a partial Debug failure doesn't hide a working
-:: Release DLL. Each build step is independent — a Release error does not
-:: stop the Debug build, and vice versa.
 set "BUILD_FAILED=0"
 
 if "%BUILD_RELEASE%"=="1" (
@@ -114,28 +107,49 @@ echo.
 echo [STEP] Copying DLLs to %OUT_DIR%...
 
 if "%BUILD_RELEASE%"=="1" (
-    if exist "%BUILD_DIR%\Release\LumaCore.dll" (
+    set "RELEASE_BUILD_DIR=%BUILD_DIR%\Release"
+    :: VS generator puts output in <build>\Release\; also check <build>\src\Release\ variants
+    if not exist "!RELEASE_BUILD_DIR!\LumaCore.dll" (
+        set "RELEASE_BUILD_DIR=%BUILD_DIR%\LumaCore\Release"
+    )
+    if exist "!RELEASE_BUILD_DIR!\LumaCore.dll" (
         mkdir "%OUT_DIR%\Release" 2>nul
-        copy /Y "%BUILD_DIR%\Release\LumaCore.dll" "%OUT_DIR%\Release\" >nul
-        if exist "%BUILD_DIR%\Release\dwmapi.dll" (
-            copy /Y "%BUILD_DIR%\Release\dwmapi.dll" "%OUT_DIR%\Release\" >nul
+        copy /Y "!RELEASE_BUILD_DIR!\LumaCore.dll" "%OUT_DIR%\Release\" >nul
+        echo [OK] Copied LumaCore.dll (Release)
+        if exist "!RELEASE_BUILD_DIR!\dwmapi.dll" (
+            copy /Y "!RELEASE_BUILD_DIR!\dwmapi.dll" "%OUT_DIR%\Release\" >nul
+            echo [OK] Copied dwmapi.dll (Release)
         )
         echo [OK] Release DLLs copied to %OUT_DIR%\Release
     ) else (
-        echo [SKIP] Release LumaCore.dll not produced.
+        echo [WARN] Release LumaCore.dll not found. Searched:
+        echo        %BUILD_DIR%\Release\
+        echo        %BUILD_DIR%\LumaCore\Release\
+        dir /s /b "%BUILD_DIR%\*.dll" 2>nul || echo        (no DLLs found in build tree)
+        if "%BUILD_FAILED%"=="0" set "BUILD_FAILED=1"
     )
 )
 
 if "%BUILD_DEBUG%"=="1" (
-    if exist "%BUILD_DIR%\Debug\LumaCore.dll" (
+    set "DEBUG_BUILD_DIR=%BUILD_DIR%\Debug"
+    if not exist "!DEBUG_BUILD_DIR!\LumaCore.dll" (
+        set "DEBUG_BUILD_DIR=%BUILD_DIR%\LumaCore\Debug"
+    )
+    if exist "!DEBUG_BUILD_DIR!\LumaCore.dll" (
         mkdir "%OUT_DIR%\Debug" 2>nul
-        copy /Y "%BUILD_DIR%\Debug\LumaCore.dll" "%OUT_DIR%\Debug\" >nul
-        if exist "%BUILD_DIR%\Debug\dwmapi.dll" (
-            copy /Y "%BUILD_DIR%\Debug\dwmapi.dll" "%OUT_DIR%\Debug\" >nul
+        copy /Y "!DEBUG_BUILD_DIR!\LumaCore.dll" "%OUT_DIR%\Debug\" >nul
+        echo [OK] Copied LumaCore.dll (Debug)
+        if exist "!DEBUG_BUILD_DIR!\dwmapi.dll" (
+            copy /Y "!DEBUG_BUILD_DIR!\dwmapi.dll" "%OUT_DIR%\Debug\" >nul
+            echo [OK] Copied dwmapi.dll (Debug)
         )
         echo [OK] Debug DLLs copied to %OUT_DIR%\Debug
     ) else (
-        echo [SKIP] Debug LumaCore.dll not produced.
+        echo [WARN] Debug LumaCore.dll not found. Searched:
+        echo        %BUILD_DIR%\Debug\
+        echo        %BUILD_DIR%\LumaCore\Debug\
+        dir /s /b "%BUILD_DIR%\*.dll" 2>nul || echo        (no DLLs found in build tree)
+        if "%BUILD_FAILED%"=="0" set "BUILD_FAILED=1"
     )
 )
 
