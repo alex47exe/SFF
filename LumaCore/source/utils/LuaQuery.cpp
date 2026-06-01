@@ -329,9 +329,10 @@ namespace LuaLoader {
 
         // Phase 1: parallel file read + mtime stat
         std::vector<FileSnapshot> snapshots(luaFiles.size());
+        const size_t hwThreads = static_cast<size_t>(
+            std::max(1u, std::thread::hardware_concurrency()));
         const size_t workerCount =
-            std::max<size_t>(1, std::min(luaFiles.size(),
-                                         static_cast<size_t>(std::max(1u, std::thread::hardware_concurrency()))));
+            std::max<size_t>(1, std::min(luaFiles.size(), hwThreads));
         std::atomic<size_t> nextIx{0};
         std::vector<std::future<void>> jobs;
         jobs.reserve(workerCount);
