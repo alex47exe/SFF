@@ -114,6 +114,10 @@ add_library(LumaCore SHARED
     $<$<CONFIG:Release>:${PROTO_GEN_LITE_DIR}/steam_messages.pb.cc>
 )
 
+# Strip the "lib" prefix that GCC/MinGW adds by default so the output is
+# always LumaCore.dll regardless of toolchain (MSVC never adds it; MinGW does).
+set_target_properties(LumaCore PROPERTIES PREFIX "")
+
 # Header search path — per-config include directory
 target_include_directories(LumaCore PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -148,3 +152,6 @@ target_compile_definitions(LumaCore PRIVATE
 add_library(dwmapi SHARED
     proxy/dwmapi.cpp
 )
+
+# Same prefix fix for dwmapi — MinGW would otherwise produce libdwmapi.dll.
+set_target_properties(dwmapi PROPERTIES PREFIX "")
