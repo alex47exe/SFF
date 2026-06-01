@@ -61,7 +61,7 @@ namespace {
         } catch (const std::out_of_range&) {
             return false;
         }
-
+    }
         int64_t ReadMtimeSeconds(const std::string& filePath) {
             int64_t lua_mtime_secs = 0;
             WIN32_FILE_ATTRIBUTE_DATA attr{};
