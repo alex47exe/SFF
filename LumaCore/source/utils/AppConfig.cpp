@@ -47,21 +47,49 @@ namespace AppConfig {
 
         bool ReadBoolKey(const std::string& json, const char* key, bool fallback) {
             const std::string needle = std::string("\"") + key + "\"";
-            size_t pos = json.find(needle);
-            if (pos == std::string::npos) return fallback;
-            pos = json.find(':', pos + needle.size());
-            if (pos == std::string::npos) return fallback;
-            ++pos;
-            while (pos < json.size()
-                   && (json[pos] == ' ' || json[pos] == '\t'
-                       || json[pos] == '\r' || json[pos] == '\n')) {
+            size_t pos = 0;
+            int depth = 0;
+
+            // Advance pos past the current JSON string, handling escape sequences.
+            auto skipString = [&]() {
+                ++pos; // skip opening '"'
+                while (pos < json.size()) {
+                    char c = json[pos++];
+                    if (c == '\\') { if (pos < json.size()) ++pos; continue; } // skip escaped char
+                    if (c == '"') return;               // end of string
+                }
+            };
+
+            while (pos < json.size()) {
+                char c = json[pos];
+                if (c == '{' || c == '[') { ++depth; ++pos; continue; }
+                if (c == '}' || c == ']') { --depth; ++pos; continue; }
+                if (c == '"') {
+                    // Only match top-level object keys (depth == 1).
+                    if (depth == 1 && json.compare(pos, needle.size(), needle) == 0) {
+                        size_t after = pos + needle.size();
+                        while (after < json.size()
+                               && std::isspace(static_cast<unsigned char>(json[after])))
+                            ++after;
+                        if (after < json.size() && json[after] == ':') {
+                            ++after;
+                            while (after < json.size()
+                                   && std::isspace(static_cast<unsigned char>(json[after])))
+                                ++after;
+                            if (after + 4 <= json.size()) {
+                                std::string tok = json.substr(after, 5);
+                                for (char& tc : tok)
+                                    tc = static_cast<char>(::tolower(static_cast<unsigned char>(tc)));
+                                if (tok.rfind("true", 0) == 0) return true;
+                                if (tok.rfind("false", 0) == 0) return false;
+                            }
+                            return fallback;
+                        }
+                    }
+                    skipString();
+                    continue;
+                }
                 ++pos;
-            }
-            if (pos + 4 <= json.size()) {
-                std::string token = json.substr(pos, 5);
-                for (char& c : token) c = static_cast<char>(::tolower(static_cast<unsigned char>(c)));
-                if (token.rfind("true", 0) == 0) return true;
-                if (token.rfind("false", 0) == 0) return false;
             }
             return fallback;
         }
