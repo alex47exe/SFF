@@ -35,6 +35,7 @@ namespace {
         AppId_t appId = 0;
         uint64_t depotId = 0;
         uint64_t newGid = 0;
+        std::string luaPath;
     };
 
     std::mutex g_pendingMu;
@@ -175,10 +176,13 @@ namespace ManifestBind {
             return;
         }
 
-        std::thread([items = std::move(items)]() mutable {
+        for (auto& it : items)
+            it.luaPath = LuaLoader::GetLuaFilePath(it.appId);
+
+        std::thread([items = std::move(items)]() {
             try {
                 for (const auto& it : items) {
-                    std::string luaPath = LuaLoader::GetLuaFilePath(it.appId);
+                    const std::string& luaPath = it.luaPath;
                     if (luaPath.empty()) continue;
                     if (RewriteLuaManifestGid(luaPath, it.depotId, it.newGid)) {
                         LOG_MANIFESTCH_INFO("FlushPending: updated lua gid app={} depot={} gid={}",
