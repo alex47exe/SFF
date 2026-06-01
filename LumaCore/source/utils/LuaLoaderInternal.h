@@ -41,6 +41,7 @@ namespace LuaLoader::Internal {
     // Per-app .lua mtime stamp, populated when ParseFile runs successfully.
     // Keyed by appid (whatever the .lua's stem encodes); seconds since epoch.
     extern std::unordered_map<AppId_t, int64_t>     LuaMtimeMap;
+    extern std::unordered_map<AppId_t, std::string> LuaFilePathMap;
 
     // ── Per-file parse session ────────────────────────────────────────────
     // ParseFile populates `currentFile`, every successful binding pushes
@@ -62,6 +63,7 @@ namespace LuaLoader::Internal {
     extern std::unordered_map<AppId_t, uint32_t> g_depotRefCount;
     extern std::vector<AppId_t> g_pendingRemovals;
     extern std::vector<AppId_t> g_pendingAdditions;
+    void UnloadFile_nolock(const std::string& filePath);
 
     constexpr uint64_t kDefaultStatSteamId = 76561198028121353ULL;
 

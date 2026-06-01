@@ -249,6 +249,15 @@ static DWORD WINAPI InitThread(LPVOID param) {
 
     DirWatch::Start(watchDirs);
 
+    HookStatus::SetCriticalHooks({
+        "LoadPackage",
+        "CheckAppOwnership",
+        "SendCallbackToPipe",
+        "MarkLicenseAsChanged",
+        "GetPackageInfo",
+        "ProcessPendingLicenseUpdates",
+    });
+
     // LC_ATTACH macro chain. Each macro re-publishes through the HookStatus
     // mutator path (RecordInstalled / RecordMissed), so the banner reflects
     // every miss without an extra WriteToDisk call here. Returns cleanly on

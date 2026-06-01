@@ -78,6 +78,8 @@ namespace Settings {
                         }
                     }
                 }
+                if (auto c = (*luaTbl)["cleanup_orphan_jsonc"].value<bool>())
+                    cleanupOrphanJsonc = *c;
             }
 
             // [pattern_fetch]
@@ -120,10 +122,12 @@ namespace Settings {
             if (urlsLog.empty()) urlsLog = "<disabled>";
 
             LOG_INFO("Settings: log.level={} log.verbose={} lua.paths_count={} "
+                     "lua.cleanup_orphan_jsonc={} "
                      "pattern_fetch.mirror={} manifest_fetch.urls=[{}] "
                      "manifest_fetch.timeout_sec={}",
                      LevelName(logLevel), verbose ? "true" : "false",
                      static_cast<uint32_t>(luaPaths.size()),
+                     cleanupOrphanJsonc ? "true" : "false",
                      patternMirror.empty() ? "<none>" : patternMirror,
                      urlsLog,
                      manifestFetchTimeoutSec);

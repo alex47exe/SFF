@@ -23,10 +23,23 @@
 //   steamclient_sha     string (empty when unknown)
 //   steamui_sha         string (empty when unknown)
 
+#include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace HookStatus {
+
+    struct AppInfo {
+        uint32_t appId = 0;
+        std::string gameName;
+        std::string luaPath;
+        std::string jsoncPath;
+        bool onlinefix = false;
+        bool allowUpdate = false;
+        std::string manifestMode;
+        uint64_t manifestGid = 0;
+    };
 
     void SetBuildId(std::string buildId);
 
@@ -35,9 +48,12 @@ namespace HookStatus {
     void SetTomlAvailability(std::string_view moduleName, bool found);
 
     void SetShas(std::string steamclientSha, std::string steamuiSha);
+    void SetCriticalHooks(std::vector<std::string> hooks);
 
     void RecordInstalled();
     void RecordMissed(std::string hookName);
+    void PublishApp(const AppInfo& app);
+    void UnpublishApp(uint32_t appId);
 
     // Writes the current snapshot to <Steam>\lumacore\status.json via a
     // tmp + MoveFileExA(MOVEFILE_REPLACE_EXISTING) swap. Best-effort: failures
@@ -46,4 +62,3 @@ namespace HookStatus {
     void WriteToDisk();
 
 }  // namespace HookStatus
-

@@ -4,6 +4,7 @@
 // See <https://www.gnu.org/licenses/> for the full license text.
 
 #include "PackagePatch.h"
+#include "ManifestBind.h"
 #include "Macros.h"
 #include "RuntimeCapture.h"
 #include "entry.h"
@@ -150,6 +151,10 @@ namespace {
 
     LC_HOOK_DEF(SendCallbackToPipe, bool, void* pSteamEngine, HSteamPipe hSteamPipe,
               HSteamUser iClientUser, int iCallback, void* pCallbackData, int cubCallbackData) {
+        if (iCallback == AppInstalled_t::k_iCallback) {
+            ManifestBind::FlushPending();
+        }
+
         if (iCallback == AppLicensesChanged_t::k_iCallback) {
             auto* p = static_cast<AppLicensesChanged_t*>(pCallbackData);
             LOG_PACKAGE_DEBUG("SendCallbackToPipe: AppLicensesChanged m_bReloadAll={} -> true",

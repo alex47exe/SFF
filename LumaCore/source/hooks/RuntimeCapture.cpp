@@ -9,6 +9,7 @@
 #include "SteamUI.h"
 #include "utils/VehUtil.h"
 #include "utils/Ticket.h"
+#include "utils/AppConfig.h"
 #include "entry.h"
 
 namespace {
@@ -235,7 +236,8 @@ namespace {
                 ctx->EFlags |= 0x100;
 
                 bool hasDepot = LuaLoader::HasDepot(appId);
-                bool hasFlag  = (cmdLine != nullptr) && HasExactFlag(cmdLine, "-onlinefix");
+                bool hasFlag  = ((cmdLine != nullptr) && HasExactFlag(cmdLine, "-onlinefix"))
+                                || AppConfig::IsOnlineFixEnabled(appId);
 
                 LOG_MISC_INFO("SpawnProcess: hit appid={} hasDepot={} hasFlag={} exe=\"{}\" cmd=\"{}\"",
                               appId, hasDepot, hasFlag,

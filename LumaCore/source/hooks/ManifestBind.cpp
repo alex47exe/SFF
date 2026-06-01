@@ -6,8 +6,17 @@
 #include "ManifestBind.h"
 #include "Macros.h"
 #include "entry.h"
+#include "utils/AppConfig.h"
+#include "utils/HookStatus.h"
 #include <format>
+#include <filesystem>
+#include <fstream>
+#include <atomic>
+#include <mutex>
+#include <regex>
 #include <string>
+#include <thread>
+#include <vector>
 
 // ▌▌ LumaCore ▌ MANIFEST ▌ Manifest override hook
 //  BuildDepotDependency patches depot entries' gid/size directly in the
@@ -20,6 +29,38 @@
 //  re-introduce wrong-target risk on builds where their TOML rva drifts.
 // ▌▌
 namespace {
+
+    struct PendingRewrite {
+        AppId_t appId = 0;
+        uint64_t depotId = 0;
+        uint64_t newGid = 0;
+    };
+
+    std::mutex g_pendingMu;
+    std::vector<PendingRewrite> g_pending;
+    std::atomic<bool> g_flushRunning{false};
+
+    static bool RewriteLuaManifestGid(const std::string& luaPath, uint64_t depotId, uint64_t gid) {
+        std::ifstream in(luaPath, std::ios::binary);
+        if (!in) return false;
+        std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+        if (body.empty()) return false;
+
+        const std::string pat =
+            "setManifestid\\s*\\(\\s*" + std::to_string(depotId) + "\\s*,\\s*\"[0-9]+\"";
+        std::regex re(pat);
+        std::string replacement =
+            "setManifestid(" + std::to_string(depotId) + ", \"" + std::to_string(gid) + "\"";
+        std::string updated = std::regex_replace(body, re, replacement,
+                                                 std::regex_constants::format_first_only);
+        if (updated == body) return false;
+
+        std::ofstream out(luaPath, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(updated.data(), static_cast<std::streamsize>(updated.size()));
+        return static_cast<bool>(out);
+    }
 
     // ▌ MANIFEST ▌ helper
 
@@ -68,6 +109,17 @@ namespace {
             for (DepotEntry* ep = pBegin; ep != pEnd; ++ep) {
                 auto it = overrides.find(ep->DepotId);
                 if (it != overrides.end()) {
+                    if (AppConfig::IsAllowUpdateEnabled(ep->AppId)) {
+                        if (ep->ManifestGid != it->second.gid) {
+                            std::lock_guard<std::mutex> lk(g_pendingMu);
+                            g_pending.push_back(PendingRewrite{
+                                ep->AppId, ep->DepotId, ep->ManifestGid
+                            });
+                            LOG_MANIFESTCH_INFO("BuildDepotDependency: queued latest gid update app={} depot={} {}->{}",
+                                                ep->AppId, ep->DepotId, it->second.gid, ep->ManifestGid);
+                        }
+                        continue;
+                    }
                     // if size=0 in the override, keep the original size(affects download display but not the actual download)
                     uint64_t newSize = it->second.size ? it->second.size : ep->ManifestSize;
                     LOG_MANIFESTCH_INFO("BuildDepotDependency: patching depot {} gid={}->{} size={}->{}",
@@ -95,5 +147,43 @@ namespace ManifestBind {
         LC_TX_OPEN();
         LC_DETACH(BuildDepotDependency);
         LC_TX_COMMIT();
+    }
+
+    void FlushPending() {
+        std::vector<PendingRewrite> items;
+        {
+            std::lock_guard<std::mutex> lk(g_pendingMu);
+            if (g_pending.empty()) return;
+            items.swap(g_pending);
+        }
+
+        bool expected = false;
+        if (!g_flushRunning.compare_exchange_strong(expected, true)) {
+            std::lock_guard<std::mutex> lk(g_pendingMu);
+            g_pending.insert(g_pending.end(), items.begin(), items.end());
+            return;
+        }
+
+        std::thread([items = std::move(items)]() mutable {
+            for (const auto& it : items) {
+                std::string luaPath = LuaLoader::GetLuaFilePath(it.appId);
+                if (luaPath.empty()) continue;
+                if (RewriteLuaManifestGid(luaPath, it.depotId, it.newGid)) {
+                    LOG_MANIFESTCH_INFO("FlushPending: updated lua gid app={} depot={} gid={}",
+                                        it.appId, it.depotId, it.newGid);
+                    AppConfig::LoadJsonc(luaPath, it.appId, "");
+                    HookStatus::AppInfo app{};
+                    app.appId = it.appId;
+                    app.luaPath = luaPath;
+                    app.jsoncPath = AppConfig::JsoncPathFor(luaPath);
+                    app.allowUpdate = AppConfig::IsAllowUpdateEnabled(it.appId);
+                    app.onlinefix = AppConfig::IsOnlineFixEnabled(it.appId);
+                    app.manifestMode = app.allowUpdate ? "latest" : "pinned";
+                    app.manifestGid = it.newGid;
+                    HookStatus::PublishApp(app);
+                }
+            }
+            g_flushRunning.store(false, std::memory_order_release);
+        }).detach();
     }
 }

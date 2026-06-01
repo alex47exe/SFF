@@ -10,13 +10,18 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <exception>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace HookStatus {
@@ -32,11 +37,10 @@ namespace HookStatus {
         bool        g_steamuiToml     = false;
         std::uint64_t            g_installed = 0;
         std::vector<std::string> g_missed;
+        std::unordered_set<std::string> g_criticalHooks;
+        std::unordered_map<uint32_t, AppInfo> g_apps;
         bool        g_initDone        = false;
 
-        // Conservative escaper for JSON string literals. The values we emit are
-        // ASCII function names, hex SHAs, and decimal build ids, so anything
-        // outside printable ASCII falls through to \uXXXX.
         std::string JsonEscape(std::string_view s) {
             std::string out;
             out.reserve(s.size() + 2);
@@ -64,10 +68,28 @@ namespace HookStatus {
             return out;
         }
 
-        // Caller already owns g_mu.
+        std::pair<bool, std::string> ComputeDegradedLocked() {
+            std::vector<std::string> hits;
+            for (const auto& name : g_missed) {
+                if (g_criticalHooks.count(name)) hits.push_back(name);
+            }
+            if (hits.empty()) return {false, ""};
+            std::sort(hits.begin(), hits.end());
+            hits.erase(std::unique(hits.begin(), hits.end()), hits.end());
+
+            std::string reason = "critical hooks missed: ";
+            for (size_t i = 0; i < hits.size(); ++i) {
+                if (i) reason += ", ";
+                reason += hits[i];
+            }
+            return {true, reason};
+        }
+
         std::string SerializeLocked() {
+            auto [degraded, reason] = ComputeDegradedLocked();
+
             std::string out;
-            out.reserve(256 + g_missed.size() * 32);
+            out.reserve(512 + g_missed.size() * 32 + g_apps.size() * 128);
             out += "{\n";
             out += "  \"build_id\": \"";
             out += JsonEscape(g_buildId);
@@ -95,7 +117,35 @@ namespace HookStatus {
             out += "\",\n";
             out += "  \"steamui_sha\": \"";
             out += JsonEscape(g_steamuiSha);
-            out += "\"\n";
+            out += "\",\n";
+            out += "  \"degraded_mode\": ";
+            out += degraded ? "true" : "false";
+            out += ",\n";
+            out += "  \"degraded_reason\": \"";
+            out += JsonEscape(reason);
+            out += "\",\n";
+            out += "  \"apps\": [\n";
+
+            std::vector<uint32_t> ids;
+            ids.reserve(g_apps.size());
+            for (const auto& [id, _] : g_apps) ids.push_back(id);
+            std::sort(ids.begin(), ids.end());
+            for (size_t i = 0; i < ids.size(); ++i) {
+                const AppInfo& app = g_apps[ids[i]];
+                out += "    {";
+                out += "\"app_id\": " + std::to_string(app.appId);
+                out += ", \"game_name\": \"" + JsonEscape(app.gameName) + "\"";
+                out += ", \"lua_path\": \"" + JsonEscape(app.luaPath) + "\"";
+                out += ", \"jsonc_path\": \"" + JsonEscape(app.jsoncPath) + "\"";
+                out += ", \"onlinefix\": " + std::string(app.onlinefix ? "true" : "false");
+                out += ", \"allow_update\": " + std::string(app.allowUpdate ? "true" : "false");
+                out += ", \"manifest_mode\": \"" + JsonEscape(app.manifestMode) + "\"";
+                out += ", \"manifest_gid\": " + std::to_string(app.manifestGid);
+                out += "}";
+                if (i + 1 != ids.size()) out += ",";
+                out += "\n";
+            }
+            out += "  ]\n";
             out += "}\n";
             return out;
         }
@@ -148,8 +198,6 @@ namespace HookStatus {
             return true;
         }
 
-        // Called from any mutator while holding g_mu. Re-publishes the file
-        // only after the first explicit WriteToDisk has flipped g_initDone.
         void MaybeRepublishLocked() {
             if (!g_initDone) return;
             std::string body = SerializeLocked();
@@ -161,6 +209,7 @@ namespace HookStatus {
     void SetBuildId(std::string buildId) {
         std::lock_guard<std::mutex> lk(g_mu);
         g_buildId = std::move(buildId);
+        MaybeRepublishLocked();
     }
 
     void SetTomlAvailability(std::string_view moduleName, bool found) {
@@ -174,23 +223,52 @@ namespace HookStatus {
                      std::string(moduleName));
             return;
         }
+        MaybeRepublishLocked();
     }
 
     void SetShas(std::string steamclientSha, std::string steamuiSha) {
         std::lock_guard<std::mutex> lk(g_mu);
         g_steamclientSha = std::move(steamclientSha);
         g_steamuiSha     = std::move(steamuiSha);
+        MaybeRepublishLocked();
+    }
+
+    void SetCriticalHooks(std::vector<std::string> hooks) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_criticalHooks.clear();
+        for (auto& h : hooks) {
+            if (!h.empty()) g_criticalHooks.insert(std::move(h));
+        }
+        MaybeRepublishLocked();
     }
 
     void RecordInstalled() {
         std::lock_guard<std::mutex> lk(g_mu);
         ++g_installed;
+        MaybeRepublishLocked();
     }
 
     void RecordMissed(std::string hookName) {
         if (hookName.empty()) return;
         std::lock_guard<std::mutex> lk(g_mu);
+        if (g_criticalHooks.count(hookName)) {
+            LOG_WARN("HookStatus: critical hook '{}' missed", hookName);
+        }
         g_missed.push_back(std::move(hookName));
+        MaybeRepublishLocked();
+    }
+
+    void PublishApp(const AppInfo& app) {
+        if (app.appId == 0) return;
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_apps[app.appId] = app;
+        MaybeRepublishLocked();
+    }
+
+    void UnpublishApp(uint32_t appId) {
+        std::lock_guard<std::mutex> lk(g_mu);
+        g_apps.erase(appId);
+        MaybeRepublishLocked();
     }
 
     void WriteToDisk() {

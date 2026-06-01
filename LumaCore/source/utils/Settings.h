@@ -41,6 +41,7 @@ namespace Settings {
     // which is the data-exfil mitigation. Adding "*" is treated as
     // empty (we do NOT support disabling the gate).
     inline std::vector<std::string> luaHttpAllowlistExtra;
+    inline bool cleanupOrphanJsonc = true;
 
     // [pattern_fetch] mirror
     // Optional URL template for the pattern repo, with {subdir} and {sha}
