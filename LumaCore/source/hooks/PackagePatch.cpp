@@ -133,11 +133,12 @@ namespace {
                 LOG_PACKAGE_DEBUG("CheckAppOwnership: appId={} actually owned (ExistInPkg={} PackageId={}), marking",
                                   appId, pOwn->ExistInPackageNums, pOwn->PackageId);
             } else {
+                uint32_t origPackageId = pOwn->PackageId;
                 pOwn->PackageId    = 0;
                 pOwn->ReleaseState = EAppReleaseState::Released;
                 pOwn->bFreeLicense = false;
                 LOG_PACKAGE_INFO("CheckAppOwnership: appId={} patched -> owned (was result={} ExistInPkg={} PackageId={})",
-                                  appId, result, pOwn->ExistInPackageNums, pOwn->PackageId);
+                                  appId, result, pOwn->ExistInPackageNums, origPackageId);
                 // Diagnostic only: titles known to use Steam DRM (Steam Stub)
                 // can still fail at launch with error 54 even after we patch
                 // ownership, because the wrapper does its own registry-based
