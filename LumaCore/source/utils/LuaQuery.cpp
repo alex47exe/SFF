@@ -62,20 +62,20 @@ namespace {
             return false;
         }
     }
-        int64_t ReadMtimeSeconds(const std::string& filePath) {
-            int64_t lua_mtime_secs = 0;
-            WIN32_FILE_ATTRIBUTE_DATA attr{};
-            if (GetFileAttributesExA(filePath.c_str(), GetFileExInfoStandard, &attr)) {
-                ULARGE_INTEGER ull{};
-                ull.LowPart  = attr.ftLastWriteTime.dwLowDateTime;
-                ull.HighPart = attr.ftLastWriteTime.dwHighDateTime;
-                constexpr uint64_t kEpochOffset = 116444736000000000ull;
-                if (ull.QuadPart >= kEpochOffset) {
-                    lua_mtime_secs = static_cast<int64_t>((ull.QuadPart - kEpochOffset) / 10000000ull);
-                }
+    int64_t ReadMtimeSeconds(const std::string& filePath) {
+        int64_t lua_mtime_secs = 0;
+        WIN32_FILE_ATTRIBUTE_DATA attr{};
+        if (GetFileAttributesExA(filePath.c_str(), GetFileExInfoStandard, &attr)) {
+            ULARGE_INTEGER ull{};
+            ull.LowPart  = attr.ftLastWriteTime.dwLowDateTime;
+            ull.HighPart = attr.ftLastWriteTime.dwHighDateTime;
+            constexpr uint64_t kEpochOffset = 116444736000000000ull;
+            if (ull.QuadPart >= kEpochOffset) {
+                lua_mtime_secs = static_cast<int64_t>((ull.QuadPart - kEpochOffset) / 10000000ull);
             }
-            return lua_mtime_secs;
         }
+        return lua_mtime_secs;
+    }
 
         std::optional<AppId_t> ParseAppIdFromLuaPath(const std::filesystem::path& path) {
             const std::string stem = path.stem().string();
@@ -97,7 +97,6 @@ namespace {
             int64_t mtime = 0;
             std::optional<AppId_t> appId;
         };
-    }
 }
 
 namespace LuaLoader {
