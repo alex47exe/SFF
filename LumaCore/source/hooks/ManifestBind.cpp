@@ -53,7 +53,7 @@ namespace {
 
         const std::string pat =
             "setManifestid\\s*\\(\\s*" + std::to_string(depotId) + "\\s*,\\s*\"[0-9]+\"";
-        std::regex re(pat);
+        std::regex re(pat, std::regex_constants::icase);
         std::string replacement =
             "setManifestid(" + std::to_string(depotId) + ", \"" + std::to_string(gid) + "\"";
         std::string updated = std::regex_replace(body, re, replacement,
